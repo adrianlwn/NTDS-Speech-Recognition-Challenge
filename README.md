@@ -2,7 +2,6 @@
 
 ## Team : 
  - Kiran Bacsa
- - Rabeeh Karimi Mahabadi
  - Adrian Löwenstein
  - Manuel Vonlanthen
 
