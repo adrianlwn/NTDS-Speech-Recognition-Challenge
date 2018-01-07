@@ -18,3 +18,12 @@ TensorFlow recently released the Speech Commands Datasets. It includes 65,000 on
 
 In our project, we want to design a solution to the given speech classification problem using the graph methods we learned during the lectures. A first approach we want to try would be to classify the different core words similarly to what we have seen in assignment 3, i.e. extracting speech features (e.g. mel-cepstral coefficients) from the audio signals, build a graph using a distance function on the feature vectors and finally extract the fiedler vectors from the Laplacian of the graph to cluster the graph. Additionally, we will look further into speech processing using semi- supervised learning on graphs to try to improve our solution.
 Even though we will probably use TensorFlow as a tool (as required for the kaggle challenge), we will not constrain ourselves to this single library.
+
+## 4 Tasks
+
+- cut out silence in word recordings
+- consequently reduce number of MFCC windows/coefficients (improve significance of MFCCs)
+- encapsulate into single feature extraction function
+- separate speakers
+- implement Mei's idea directly on signal samples (SVAR transition -> adjacency matrix) --> RULED OUT !
+- implement Dong's idea (global smoothness assumption)
