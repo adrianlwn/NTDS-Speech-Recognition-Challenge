@@ -3,9 +3,10 @@ import librosa
 import librosa.display
 
 
-def cut_signal( audio, Thresh = 0.01, mode = 'proxy',reach = 2000, number_lobes = 2):
+def cut_signal( audio, Thresh = 0.1, mode = 'proxy',reach = 2000, number_lobes = 2):
     """Extracts relevant parts ofn audio signal.
-       The Thresh input value defines the sensitivity of the cut, its value has to be positive.
+       The Thresh i
+nput value defines the sensitivity of the cut, its value has to be positive.
        Two modes can be chosen:
            - proxy(Default): Finds main energy lobe of the signal and also adds lobes that are within reach. 
                              The reach parameter can be adjusted adn has to be a positive value (default is 2000.)
@@ -36,6 +37,7 @@ def cut_signal( audio, Thresh = 0.01, mode = 'proxy',reach = 2000, number_lobes 
         
     else:
         print('ERROR: mode not implemented.')
+    
         
     audio_cut = audio[int(np.max((0,int(start-shift-300)))):int(np.min((int(end)+300,len(audio))))]    
     return audio_cut
