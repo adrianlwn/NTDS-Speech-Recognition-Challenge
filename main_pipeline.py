@@ -4,6 +4,7 @@ from os.path import isdir, join
 from pathlib import Path
 import pandas as pd
 from tqdm import tqdm
+
 # Math
 import numpy as np
 import scipy.stats
@@ -16,12 +17,10 @@ from scipy import sparse, stats, spatial
 import scipy.sparse.linalg
 
 # Machine learning
-from sklearn.neural_network import MLPClassifier
-from sklearn.svm import SVC
 from sklearn.utils import shuffle
 from sklearn.metrics import  confusion_matrix
-from sklearn.naive_bayes import GaussianNB
 from sklearn.model_selection import cross_val_score
+from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
 
 # Visualization
 import matplotlib.pyplot as plt
@@ -183,81 +182,146 @@ def compute_mfcc_raw(features_og,N_MFCC,N_FFT,NUM_MFCCS_VEC,cut=True):
     features_og = features_og.merge(features_mfcc,left_index=True,right_index=True)
     return features_og
 
+def fit_and_test(clf, train_x, train_y, test_x, test_y):
+    clf.fit(train_x, train_y)  
+    predict_y = clf.predict(test_x)
+    return predict_y
+
+def adapt_labels(x_hat, class_names):
+    # Real accuracy considering only the main words :
+    class_names_list = ["yes", "no", "up", "down", "left", "right", "on", "off", "stop", "go", "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]
+    mask_names_main = [True if name in class_names_list else False for name in class_names]
+    index_names_main = [i for i in range(len(mask_names_main)) if mask_names_main[i] == True]
+    inverted_index_names = dict(zip(index_names_main,range(len(index_names_main))))
+
+    # Creating the label names :
+    class_names_main = class_names[mask_names_main].tolist()
+    class_names_main.extend(["unknown"])
+
+    # Adapting the labels in the test and prediction sets :
+    return np.array([inverted_index_names[int(x_hat[i])] if x_hat[i] in index_names_main else len(class_names_main)-1 for i in range(len(x_hat)) ]),class_names_main
+
+def solve(Y_compr, M, L, alpha, beta):
+    """Solves the above defined optimization problem t find an estimated label vector."""
+    X = np.ones(Y_compr.shape)
+    for i in range(Y_compr.shape[0]):
+        Mask = np.diag(M[i,:])
+        y_i_compr = Y_compr[i,:]
+        X[i,:] = np.linalg.solve((Mask+alpha*L+beta),y_i_compr)
+        
+    return X
+
+
 # pipeline function for semisupervised learning using graphs
-def semisup_test_all_dataset(features_og, label_vec, train_x, train_y, test_x, batch_size, NEIGHBORS, alpha, beta):
+def semisup_test_all_dataset(features_og, y, batch_size, NEIGHBORS, alpha, beta, iter_max, class_names):
     """Test semisupervised graph learning algorithm for entire dataset.
     - features_og : original copy of all MFCCs
-    - train_x : indices of training samples in dataset
-    - train_y : labels of training samples
-    - test_x : indices of testing samples in dataset
     - batch_size : number of samples to be predict per iteration in main loop
     - NEIGHBORS : number of neirest neighbors in k-NN sparsification
     - alpha : hyper-parameter which controls the trade-off between the data fidelity term and the smoothness prio
-    - beta :
+    - beta : hyper-paramter which controls the importance of the l2 regularization for semi-supervised learning
     """
+    accuracy_mat  = np.zeros((2,iter_max))
+    
+    for itr in tqdm(range(iter_max)):
+        # Specify the number of datapoints that should be sampled in each class to build training and validation set
+        train_size = 160
+        valid_size = 1553
 
-    # number of batches to loop through
-    n_batch = int(len(test_x) / batch_size)
+        train_x = np.array([])
+        train_y = np.array([])
 
-    # encode training samples classes into 1-hot array
-    n_class = np.max(train_y)
-    Y = np.eye(len(class_names))[train_y - 1].T
+        valid_x = np.array([])
+        valid_y = np.array([])
 
-    # accumulate accuracy values
-    accuracy_tot = []
-    accuracy = []
-    remaining_test = np.array(test_x)
+        for i in range(len(class_names)):
+            class_index = np.where(y == (i+1))[0]
+            random_index = np.random.choice(range(len(class_index)), size=train_size+valid_size, replace=False)
 
-    for batch in tqdm(range(n_batch)):
+            train_x_class = class_index[random_index[:train_size]]
+            train_y_class = y[train_x_class]
+            train_x = np.append(train_x, train_x_class).astype(int)
+            train_y = np.append(train_y, train_y_class).astype(int)
 
-        # get batch indices
-        potential_elements  = np.array(list(enumerate(remaining_test)))
+            valid_x_class = class_index[random_index[train_size:train_size+valid_size]]
+            valid_y_class = y[valid_x_class]
+            valid_x = np.append(valid_x, valid_x_class).astype(int)
+            valid_y = np.append(valid_y, valid_y_class).astype(int)
+
+        # Choose datapoints from validation set at random to form a batch
+        potential_elements  = np.array(list(enumerate(np.array(valid_x))))
         indices = np.random.choice(potential_elements[:,0].reshape(-1,), batch_size, replace=False)
-        batch_index = potential_elements[:,0].reshape(-1,)[indices]
-        remaining_test = np.delete(remaining_test, indices)
-
-        # build graph
-        features = pd.DataFrame(features_og['mfcc'], np.append(train_x, batch_index))
-        features -= features.mean(axis=0)
-        features /= features.std(axis=0)
-
-        distances = spatial.distance.squareform(spatial.distance.pdist(features,'cosine'))
-
+        # The batch index_variable contains the indices of the batch datapoints inside the complete dataset
+        batch_index = potential_elements[:,1].reshape(-1,)[indices]
+        
+        # Build data matrix and normalize features
+        X = pd.DataFrame(features_og['mfcc'], np.append(train_x, batch_index))
+        X -= X.mean(axis=0)
+        X /= X.std(axis=0)
+        
+        # Compute distances between all datapoints
+        distances = spatial.distance.squareform(spatial.distance.pdist(X,'cosine'))
         n=distances.shape[0]
+
+        # Build weight matrix
         kernel_width = distances.mean()
-        weights = np.exp(np.divide(-np.square(distances),kernel_width**2))
-        np.fill_diagonal(weights,0)
+        W = np.exp(np.divide(-np.square(distances),kernel_width**2))
 
-        # k-NN sparsification
-        for i in range(weights.shape[0]):
-            idx = weights[i,:].argsort()[:-NEIGHBORS]
-            weights[i,idx] = 0
-            weights[idx,i] = 0
+        # Make sure the diagonal is 0 for the weight matrix
+        np.fill_diagonal(W,0)
+        
+        # compute laplacian
+        degrees = np.sum(W,axis=0)
+        laplacian = np.diag(degrees**-0.5) @ (np.diag(degrees) - W) @ np.diag(degrees**-0.5)
+        laplacian = sparse.csr_matrix(laplacian)
+        
+        # Spectral Clustering --------------------------------------------------------------------------------
+        eigenvalues, eigenvectors = sparse.linalg.eigsh(A=laplacian,k=25,which='SM')
+        # Splitt Eigenvectors into train and validation parts
+        train_features = eigenvectors[:len(train_x),:]
+        valid_features = eigenvectors[len(train_x):,:]
+        
+        clf = QuadraticDiscriminantAnalysis()
+        predict_y = fit_and_test(clf, train_features, train_y, valid_features, np.array(y[batch_index]))
+        
+        valid_y_adapted, class_names_main = adapt_labels(np.array(y[batch_index]),class_names)
+        predict_y_adapted, class_names_main = adapt_labels(predict_y,class_names)
+        accuracy_mat[0,itr] = np.sum(valid_y_adapted==predict_y_adapted)/len(valid_y_adapted)
+        
+        # Semi-Supervised Learning-----------------------------------------------------------------------------
+        # Sparsify using k- nearest neighbours and make sure it stays symmetric
+        # Make sure
+        for i in range(W.shape[0]):
+            idx = W[i,:].argsort()[:-NEIGHBORS]
+            W[i,idx] = 0
+            W[idx,i] = 0
+        
+        # Build normalized Laplacian Matrix
+        D = np.sum(W,axis=0)
+        L = np.diag(D**-0.5) @ (np.diag(D) - W) @ np.diag(D**-0.5)
+        L = sparse.csr_matrix(L)
+ 
+        # Build one-hot encoded class matrix
+        Y_t = np.eye(len(class_names))[train_y - 1].T
+        
+        # Create Mask Matrix
+        M = np.zeros((len(class_names), len(train_y) + batch_size))
+        M[:len(train_y),:len(train_y)] = 1
 
-            # compute laplacian
-            degrees = np.sum(weights,axis=0)
-            laplacian = np.diag(degrees**-0.5) @ (np.diag(degrees) - weights) @ np.diag(degrees**-0.5)
-            laplacian = sparse.csr_matrix(laplacian)
+        # Create extened label matrix and vector
+        Y = np.concatenate((Y_t, np.zeros((len(class_names), batch_size))), axis=1)
+        
+        # Solve for the matrix X
+        Y_hat = solve(Y, M, L,alpha = 1e-3, beta  = 1e-7)
 
-            # add test samples to 1-hot array
-            M = np.zeros((len(class_names), len(train_y) + batch_size)) # mask matrix
-            M[:len(train_y),:len(train_y)] = 1
-            Y_compr = np.concatenate((Y, np.zeros((len(class_names), batch_size))), axis=1)
-            y = np.concatenate((train_y,np.zeros((batch_size,))))
+        # Go from matrix X to estimated label vector x_hat
+        y_predict = np.argmax(Y_hat,axis = 0)+np.ones(Y_hat[0,:].shape)
+        
+        # Adapt the labels, whee all words of the category "unknown" are unified
+        y_predict_adapted, class_names_main = adapt_labels(y_predict,class_names)
+        y_adapted, class_names_main = adapt_labels(np.array(y[batch_index]),class_names)
 
-            # Solve
-            X = solve(Y_compr, M, laplacian, alpha = alpha, beta = beta)
+        # Compute accuracy in predicting unknown labels
+        accuracy_mat[1,itr] = np.sum(y_predict_adapted[-batch_size:]==y_adapted)/batch_size
 
-            # Make label vector
-            x_hat = np.argmax(X,axis = 0) + np.ones(X[0,:].shape)
-
-            # Unify labels 13-30
-            x_hat_adapted = adapt_labels(x_hat)
-            true_y = np.concatenate((train_y,label_vec[batch_index]))
-            y_adapted = adapt_labels(true_y)
-
-            # Only consider unknowns
-            accuracy_tot.append(np.sum(x_hat[(len(x_hat)-batch_size):]==true_y[(len(x_hat)-batch_size):])/batch_size) # for all 30 words
-            accuracy.append(np.sum(x_hat_adapted[(len(x_hat)-batch_size):]==y_adapted[(len(x_hat)-batch_size):])/batch_size) # only core words
-
-            return accuracy, accuracy_tot
+    return accuracy_mat
